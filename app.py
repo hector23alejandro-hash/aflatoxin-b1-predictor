@@ -1,3 +1,4 @@
+%%writefile app.py
 import streamlit as st
 import joblib
 import pandas as pd
@@ -5,19 +6,15 @@ import numpy as np
 import os
 
 # Define the paths for the model and scaler files
-MODEL_PATH = '/content/optimized_random_forest_model.joblib'
-# Assuming the scaler was saved during preprocessing or can be recreated
-# For simplicity here, we'll demonstrate how to load if it was saved.
-# If the scaler was NOT saved, you would need to refit it using
-# the training data or ensure your prediction function handles scaling internally.
-# Since the preprocessed data is available, we can refit the scaler if needed.
+# *** MODIFIED PATHS TO BE RELATIVE TO THE REPOSITORY ROOT ***
+MODEL_PATH = 'optimized_random_forest_model.joblib'
 
 # --- Load Model ---
 try:
     optimized_rf_model = joblib.load(MODEL_PATH)
     st.success(f"✅ Modelo '{os.path.basename(MODEL_PATH)}' cargado exitosamente.")
 except FileNotFoundError:
-    st.error(f"❌ Error: Modelo no encontrado en {MODEL_PATH}. Asegúrate de que se guardó correctamente.")
+    st.error(f"❌ Error: Modelo no encontrado en {MODEL_PATH}. Asegúrate de que el archivo '{os.path.basename(MODEL_PATH)}' esté en la raíz de tu repositorio de GitHub.")
     st.stop() # Stop execution if model not found
 except Exception as e:
     st.error(f"❌ Error cargando el modelo: {e}")
@@ -25,65 +22,106 @@ except Exception as e:
 
 # --- Load or Recreate Scaler ---
 # Ideally, the scaler should be saved during preprocessing.
-# If it wasn't, we need to load the preprocessed data and fit a new scaler.
-# This assumes the preprocessed data file contains the 'current_normalized' column
-# used to fit the original scaler.
-PREPROCESSED_DATA_PATH = '/content/preprocessed_data.csv'
+# If it wasn't, we need to load the original data and fit a new scaler.
+# This assumes the original files are available in the repository root.
+PREPROCESSED_DATA_PATH = 'preprocessed_data.csv' # Assuming preprocessed data might also be in root
+SCALER_PATH = 'scaler.joblib' # Assuming scaler might be saved in root
+
 try:
-    if os.path.exists('/content/scaler.joblib'): # Check if scaler was saved
-         scaler = joblib.load('/content/scaler.joblib')
+    if os.path.exists(SCALER_PATH): # Check if scaler was saved
+         scaler = joblib.load(SCALER_PATH)
          st.success("✅ Scaler cargado exitosamente.")
+    # If scaler wasn't saved, load original data to fit it
+    # Assuming original files are available in the repository root
+    elif os.path.exists('aflatoxin_b1_calibration.csv') and os.path.exists('aflatoxin_b1_calibration 2.csv'):
+        st.warning(f"⚠️ Scaler no encontrado en '{SCALER_PATH}'. Refitando scaler desde archivos de datos originales.")
+        try:
+            df1_orig = pd.read_csv('aflatoxin_b1_calibration.csv')
+            df2_orig = pd.read_csv('aflatoxin_b1_calibration 2.csv')
+
+            # Standardize column names (must match preprocessing step)
+            # Use robust column finding like in the full pipeline script
+            def standardize_columns(df):
+                 column_mapping = {}
+                 for col in df.columns:
+                     lower_col = col.lower()
+                     if 'concentracion' in lower_col or 'concentration' in lower_col or 'x' == lower_col.strip():
+                         column_mapping[col] = 'concentration'
+                     elif 'corriente' in lower_col or 'current' in lower_col or 'y' == lower_col.strip():
+                         column_mapping[col] = 'current'
+                 if len(column_mapping) == 2:
+                     return df.rename(columns=column_mapping)
+                 else:
+                     return None # Indicate failure to find columns
+
+            df1_orig = standardize_columns(df1_orig)
+            df2_orig = standardize_columns(df2_orig)
+
+            if df1_orig is not None and df2_orig is not None:
+                df_combined_orig = pd.concat([df1_orig, df2_orig], ignore_index=True)
+                df_combined_orig = df_combined_orig.dropna()
+                df_combined_orig['current'] = pd.to_numeric(df_combined_orig['current'], errors='coerce')
+                df_combined_orig.dropna(subset=['current'], inplace=True)
+
+                from sklearn.preprocessing import StandardScaler
+                scaler = StandardScaler()
+                # Fit on the original 'current' column from the combined data
+                if not df_combined_orig[['current']].empty:
+                     scaler.fit(df_combined_orig[['current']].values)
+                     st.success("✅ Scaler refitado desde datos originales.")
+
+                     # Optional: Save the refitted scaler for future use in deployment environment
+                     # This might require appropriate write permissions, which can be tricky in some deployment envs.
+                     # joblib.dump(scaler, SCALER_PATH)
+                     # st.info(f"Scaler refitado guardado como '{SCALER_PATH}' (si el entorno lo permite).")
+
+                else:
+                    st.error("❌ Error: No hay datos de 'current' válidos en los archivos originales para refitar el scaler.")
+                    st.stop()
+
+
+            else:
+                st.error("❌ Error: No se pudieron identificar las columnas necesarias en los archivos de datos originales para refitar el scaler.")
+                st.stop()
+
+
+        except FileNotFoundError: # This block is inside the elif, so this FileNotFoundError is redundant here
+             pass # Handled by the outer elif
+        except Exception as e:
+            st.error(f"❌ Ocurrió un error refitando el scaler desde datos originales: {e}")
+            st.stop()
+
     elif os.path.exists(PREPROCESSED_DATA_PATH):
-        st.warning(f"⚠️ Scaler no encontrado. Refitando scaler desde '{os.path.basename(PREPROCESSED_DATA_PATH)}'.")
-        df_preprocessed = pd.read_csv(PREPROCESSED_DATA_PATH)
-        if 'current_normalized' in df_preprocessed.columns and 'concentration' in df_preprocessed.columns:
-             # Need the ORIGINAL (unnormalized) data to fit the scaler correctly
-             # This requires access to the original combined data BEFORE normalization.
-             # A robust solution would save the scaler object itself.
-             # For this example, we'll use a placeholder and note the requirement.
-             # In a real scenario, you MUST save the scaler used during training.
-             # Assuming 'current' column was present before normalization step in preprocessed data or load original.
-             # Let's assume we can reload the original data to fit the scaler for demonstration.
-             # A more robust approach is to save the scaler object alongside the model.
+         st.warning(f"⚠️ Scaler no encontrado en '{SCALER_PATH}'. Intentando cargar datos preprocesados desde '{PREPROCESSED_DATA_PATH}' para refitar.")
+         try:
+              df_preprocessed = pd.read_csv(PREPROCESSED_DATA_PATH)
+              if 'current' in df_preprocessed.columns: # Need original current to fit scaler
+                  from sklearn.preprocessing import StandardScaler
+                  scaler = StandardScaler()
+                  if not df_preprocessed[['current']].empty:
+                       scaler.fit(df_preprocessed[['current']].values) # Fit on the original 'current' column
+                       st.success("✅ Scaler refitado desde datos preprocesados (columna 'current').")
+                  elif 'current_normalized' in df_preprocessed.columns and 'concentration' in df_preprocessed.columns:
+                       # If only normalized current is available, cannot refit the scaler correctly.
+                       st.error(f"❌ Error: El archivo '{PREPROCESSED_DATA_PATH}' solo contiene 'current_normalized', no 'current' original para refitar el scaler.")
+                       st.stop()
+                  else:
+                       st.error(f"❌ Error: El archivo '{PREPROCESSED_DATA_PATH}' no contiene la columna 'current' original para refitar el scaler.")
+                       st.stop()
 
-             # --- Alternative: If scaler wasn't saved, load original data to fit it ---
-             # This assumes original files are available or a combined original df was saved.
-             # Let's try loading original data assuming they are still in /content
-             try:
-                 df1_orig = pd.read_csv('/content/aflatoxin_b1_calibration.csv')
-                 df2_orig = pd.read_csv('/content/aflatoxin_b1_calibration 2.csv')
-
-                 # Standardize column names (must match preprocessing step)
-                 df1_orig = df1_orig.rename(columns={'x (Concentracion)': 'concentration', 'y (Corriente)': 'current'})
-                 df2_orig = df2_orig.rename(columns={'X (Concentracion)': 'concentration', 'Y (Corriente)': 'current'})
-
-                 df_combined_orig = pd.concat([df1_orig, df2_orig], ignore_index=True)
-                 df_combined_orig = df_combined_orig.dropna()
-                 df_combined_orig['current'] = pd.to_numeric(df_combined_orig['current'], errors='coerce')
-                 df_combined_orig.dropna(subset=['current'], inplace=True)
+              else:
+                   st.error(f"❌ Error: El archivo '{PREPROCESSED_DATA_PATH}' no contiene la columna 'current' original para refitar el scaler.")
+                   st.stop()
 
 
-                 from sklearn.preprocessing import StandardScaler
-                 scaler = StandardScaler()
-                 scaler.fit(df_combined_orig[['current']].values) # Fit on the original 'current' column
-                 st.success("✅ Scaler refitado desde datos originales.")
+         except FileNotFoundError: # This block is inside the elif, redundant
+              pass # Handled by the outer elif
+         except Exception as e:
+              st.error(f"❌ Ocurrió un error refitando el scaler desde datos preprocesados: {e}")
+              st.stop()
 
-                 # Optional: Save the refitted scaler for future use
-                 joblib.dump(scaler, '/content/scaler.joblib')
-                 st.info("Scaler refitado guardado como '/content/scaler.joblib'")
-
-
-             except FileNotFoundError:
-                  st.error("❌ Error: Archivos de datos originales no encontrados para refitar el scaler.")
-                  st.stop()
-             except Exception as e:
-                 st.error(f"❌ Error refitando el scaler: {e}")
-                 st.stop()
-        else:
-             st.error(f"❌ Error: El archivo '{os.path.basename(PREPROCESSED_DATA_PATH)}' no contiene las columnas necesarias para refitar el scaler.")
-             st.stop()
     else:
-        st.error(f"❌ Error: Scaler no encontrado y '{os.path.basename(PREPROCESSED_DATA_PATH)}' tampoco encontrado para refitarlo.")
+        st.error(f"❌ Error: Scaler no encontrado en '{SCALER_PATH}' y tampoco se encontraron los archivos de datos originales ('aflatoxin_b1_calibration.csv', 'aflatoxin_b1_calibration 2.csv') ni '{PREPROCESSED_DATA_PATH}' en la raíz de tu repositorio para refitarlo.")
         st.stop()
 
 except Exception as e:
@@ -131,3 +169,6 @@ if scaler:
 
 st.sidebar.write("\n")
 st.sidebar.info("Esta aplicación utiliza un modelo Random Forest entrenado para predecir la concentración de Aflatoxina B1 a partir de mediciones de corriente.")
+
+# Note: This cell will block execution as long as the streamlit app and ngrok tunnel are running.
+# To stop, interrupt the cell execution.
